@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/mail"
 	"os"
+	"strings"
 
 	"github.com/mhale/smtpd"
 	"gopkg.in/yaml.v2"
@@ -47,6 +50,34 @@ func ReadConfig(configPath string) (*Config, error) {
 	return config, nil
 }
 
+func makeWebhookRequest(msg string) error {
+
+	var jsonStr = []byte(fmt.Sprintf(`{%s:"%s"}`, globalconfig.Parameters, msg))
+
+	req, err := http.NewRequest(http.MethodPost, globalconfig.WebhookURL, bytes.NewBuffer(jsonStr))
+	req.Header.Set("Content-Type", "application/json")
+
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{}
+	bby, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	body, err := io.ReadAll(bby.Body)
+	if err != nil {
+		return err
+	}
+	fmt.Println(body)
+
+	fmt.Println("Webhook Sent")
+	return nil
+
+}
+
 func authHandler(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error) {
 
 	//Yeah I know. I hate this too.... I can't pass config as a parameter.
@@ -81,6 +112,17 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 	msg, _ := mail.ReadMessage(bytes.NewReader(data))
 	subject := msg.Header.Get("Subject")
 	log.Printf("Received mail from %s for %s with subject %s", from, to[0], subject)
+	buf := new(strings.Builder)
+	_, err := io.Copy(buf, msg.Body)
+	if err != nil {
+		return err
+	}
+	err = makeWebhookRequest(subject)
+	if err != nil {
+		fmt.Printf("There is an error sending webhook %s\n", err.Error())
+		return err
+	}
+
 	return nil
 }
 func main() {
