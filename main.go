@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -21,12 +22,10 @@ type Config struct {
 	Username   string `yaml:"Username"`
 	Password   string `yaml:"Password"`
 	WebhookURL string `yaml:"WebhookURL"`
-	Parameters string `yaml:"Parameters"`
+	Parameters map[string]string `yaml:"Parameters"`
 }
 
 const CONFIGFILENAME = "config.yaml"
-
-var globalconfig Config
 
 func ReadConfig(configPath string) (*Config, error) {
 	// Create config structure
@@ -50,11 +49,14 @@ func ReadConfig(configPath string) (*Config, error) {
 	return config, nil
 }
 
-func makeWebhookRequest(msg string) error {
+func makeWebhookRequest(msg string, config *Config) error {
 
-	var jsonStr = []byte(fmt.Sprintf(`{%s:"%s"}`, globalconfig.Parameters, msg))
+	jsonStr, err := json.Marshal(config.Parameters)
+	if err != nil{
+		log.Panic(err)
+	}
 
-	req, err := http.NewRequest(http.MethodPost, globalconfig.WebhookURL, bytes.NewBuffer(jsonStr))
+	req, err := http.NewRequest(http.MethodPost, config.WebhookURL, bytes.NewBuffer(jsonStr))
 	req.Header.Set("Content-Type", "application/json")
 
 	if err != nil {
@@ -78,12 +80,9 @@ func makeWebhookRequest(msg string) error {
 
 }
 
-func authHandler(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error) {
+func authHandler(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte, config *Config) (bool, error) {
 
-	//Yeah I know. I hate this too.... I can't pass config as a parameter.
-	usernameConf := globalconfig.Username
-	passwordConf := globalconfig.Password
-	if string(username) == usernameConf && string(password) == passwordConf {
+	if string(username) == config.Username && string(password) == config.Password {
 		log.Printf("Auth Sucess from %s\n", remoteAddr.String())
 		return true, nil
 	} else {
@@ -94,21 +93,7 @@ func authHandler(remoteAddr net.Addr, mechanism string, username []byte, passwor
 
 }
 
-func ListenAndServe(handler smtpd.Handler, authHandler smtpd.AuthHandler) error {
-	mechs := map[string]bool{"PLAIN": true}
-	srv := &smtpd.Server{
-		Addr:         fmt.Sprintf("%s:%d", globalconfig.ListenIP, globalconfig.ListenPort),
-		Handler:      handler,
-		Appname:      "MyServerApp",
-		Hostname:     "",
-		AuthMechs:    mechs,
-		AuthHandler:  authHandler,
-		AuthRequired: true,
-	}
-	return srv.ListenAndServe()
-}
-
-func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
+func mailHandler(origin net.Addr, from string, to []string, data []byte, config *Config) error {
 	msg, _ := mail.ReadMessage(bytes.NewReader(data))
 	subject := msg.Header.Get("Subject")
 	log.Printf("Received mail from %s for %s with subject %s", from, to[0], subject)
@@ -117,7 +102,7 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	err = makeWebhookRequest(subject)
+	err = makeWebhookRequest(subject, config)
 	if err != nil {
 		fmt.Printf("There is an error sending webhook %s\n", err.Error())
 		return err
@@ -125,14 +110,34 @@ func mailHandler(origin net.Addr, from string, to []string, data []byte) error {
 
 	return nil
 }
+
+
+func ListenAndServe(config *Config) error {
+	mechs := map[string]bool{"PLAIN": true}
+	srv := &smtpd.Server{
+		Addr:         fmt.Sprintf("%s:%d", config.ListenIP, config.ListenPort),
+		Handler:      func (origin net.Addr, from string, to []string, data []byte) error { return mailHandler(origin, from, to, data, config) },
+		Appname:      "MyServerApp",
+		Hostname:     "",
+		AuthMechs:    mechs,
+		AuthHandler:  func (remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared[]byte)(bool, error){ return authHandler(remoteAddr, mechanism, username, password, shared, config) },
+		AuthRequired: config.Username != "",
+	}
+	return srv.ListenAndServe()
+}
+
 func main() {
 	c, err := ReadConfig(CONFIGFILENAME)
 	if err != nil {
 		log.Fatal(err)
 	}
-	globalconfig = *c
 
 	log.Println("Server Running.....")
-	ListenAndServe(mailHandler, authHandler)
+	if c.Username != "" {
+		log.Println("Authentication required")
+	}else{
+		log.Println("Anonymous access permitted")
+	}
+	ListenAndServe(c)
 
 }
