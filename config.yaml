@@ -4,4 +4,6 @@ ListenPort: 2525
 Username: user
 Password:   password
 WebhookURL: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
-Parameters: "postdata"
+Parameters:
+   param1: value1
+   param2: value2
